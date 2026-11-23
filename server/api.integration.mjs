@@ -2,17 +2,40 @@ import test, { after, before } from 'node:test'
 import assert from 'node:assert/strict'
 import { createServer } from 'node:http'
 import { spawn } from 'node:child_process'
+import { DatabaseSync } from 'node:sqlite'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
-let mock, apiProcess, apiUrl, folder, providerCalls=0, providerDelayMs=0
+let mock, apiProcess, apiUrl, folder, providerCalls=0, providerDelayMs=0, providerMode='invalid'
 const request=async(path,{token,method='GET',body}={})=>fetch(`${apiUrl}${path}`,{method,headers:{...(body?{'Content-Type':'application/json'}:{}),...(token?{Authorization:`Bearer ${token}`}:{})},body:body?JSON.stringify(body):undefined})
 const unusedPort=()=>new Promise(resolve=>{const server=createServer();server.listen(0,'127.0.0.1',()=>{const port=server.address().port;server.close(()=>resolve(port))})})
 
 before(async()=>{
   folder=await mkdtemp(join(tmpdir(),'projectmentor-api-'))
-  mock=createServer(async(_req,res)=>{providerCalls+=1;const reply=()=>{if(res.destroyed)return;res.writeHead(200,{'Content-Type':'application/json'});res.end(JSON.stringify({choices:[{message:{content:JSON.stringify({invalid:true})}}]}))};if(providerDelayMs)setTimeout(reply,providerDelayMs);else reply()})
+  mock=createServer(async(req,res)=>{
+    providerCalls+=1
+    const chunks=[]
+    for await(const chunk of req) chunks.push(chunk)
+    const payload=JSON.parse(Buffer.concat(chunks).toString())
+    const system=payload.messages?.[0]?.content??''
+    const context=JSON.parse(payload.messages?.[1]?.content??'{}')
+    let response={invalid:true}
+    if(providerMode==='mentor'&&system.includes('Academic Project Mentor')) response={reply:'Start with one small test of the attendance flow, then discuss the result at your next check-in.'}
+    if(providerMode==='planner'&&system.includes('Milestone Planning Agent')) {
+      const duration=context.project.durationWeeks
+      response={
+        projectDurationWeeks:duration,
+        totalWeeks:duration,
+        summary:'Adjusted plan based on the latest progress.',
+        milestones:Array.from({length:duration},(_,index)=>({
+          week:index+1,title:`Adjusted week ${index+1}`,tasks:['Complete and validate one focused project outcome.'],dependencies:[],estimatedHours:2,deliverables:['Validated increment'],status:'planned',requiredSkills:['Testing'],testingCheckpoint:'Check the main flow.',riskMitigation:'Keep the MVP focused.',
+        })),
+      }
+    }
+    const reply=()=>{if(res.destroyed)return;res.writeHead(200,{'Content-Type':'application/json'});res.end(JSON.stringify({choices:[{message:{content:JSON.stringify(response)}}]}))}
+    if(providerDelayMs)setTimeout(reply,providerDelayMs);else reply()
+  })
   await new Promise(resolve=>mock.listen(0,'127.0.0.1',resolve))
   const providerPort=mock.address().port
   const port=await unusedPort();apiUrl=`http://127.0.0.1:${port}`
@@ -23,10 +46,47 @@ before(async()=>{
 })
 
 after(async()=>{
-  apiProcess?.kill(); await new Promise(resolve=>setTimeout(resolve,100))
+  if(apiProcess&&apiProcess.exitCode===null) await new Promise(resolve=>{apiProcess.once('exit',resolve);apiProcess.kill()})
   if(mock) await new Promise(resolve=>mock.close(resolve))
   if(folder) await rm(folder,{recursive:true,force:true})
 })
+
+async function createStudentProject(email,title='Milestone 3 project') {
+  const student=await (await request('/auth/register',{method:'POST',body:{name:'Milestone Student',email,password:'SecurePass123'}})).json()
+  const profile=await (await request('/students',{method:'POST',token:student.token,body:{
+    name:'Milestone Student',course:'Computer Science',year:'2nd year',
+    skills:[{skill:'JavaScript',category:'programming',level:2,selfLevel:2}],
+    priorProjects:'one',weeklyHours:8,
+    assessment:{score:55,level:'intermediate',strengths:['JavaScript'],growthAreas:[],verifiedShare:0,assessedAt:new Date().toISOString()},
+  }})).json()
+  const project=await (await request('/projects',{method:'POST',token:student.token,body:{
+    studentId:profile.id,title,description:'A web application to record and review classroom attendance for a small student group.',domain:'web',durationWeeks:6,
+  }})).json()
+  return {student,profile,project}
+}
+
+function seedCompletedRun(project) {
+  const createdAt=new Date().toISOString()
+  const milestones=Array.from({length:project.durationWeeks},(_,index)=>({
+    week:index+1,title:`Week ${index+1} work`,tasks:['Build and test a focused increment.'],dependencies:[],estimatedHours:4,deliverables:['Working increment'],status:'planned',requiredSkills:['JavaScript'],testingCheckpoint:'Verify the main user flow.',riskMitigation:'Keep the MVP focused.',
+  }))
+  const results={
+    feasibility:{score:75,verdict:'Feasible with Modifications',recommendations:['Keep scope focused.']},
+    scopeAndStack:{summary:'A focused attendance tracking application.',problemStatement:'Attendance is difficult to track consistently.',projectObjectives:['Record attendance','Review attendance'],proposedSolution:'A simple web attendance tracker.',targetUsers:'Teachers and students',techStack:[{layer:'Frontend',choice:'React',reason:'Supports a simple web interface.'}],successCriteria:['Record and review attendance.'],inScope:['Attendance entry'],mvp:['Attendance entry'],outOfScope:['Advanced analytics']},
+    plan:{projectDurationWeeks:project.durationWeeks,totalWeeks:project.durationWeeks,summary:'Initial plan.',milestones},
+    risk:{risks:[{title:'Scope creep',severity:'medium',mitigation:'Keep the MVP focused.'}]},
+  }
+  const run={id:`run_seed_${project.id}`,projectId:project.id,status:'completed',analysisMode:'live',steps:['feasibility','scope_tech','planner','risk'].map(agentId=>({agentId,status:'completed',summary:'Complete.'})),createdAt,finishedAt:createdAt,results}
+  const db=new DatabaseSync(join(folder,'test.sqlite'))
+  const row=db.prepare('SELECT data FROM projects WHERE id=?').get(project.id)
+  const storedProject=JSON.parse(row.data)
+  storedProject.latestRunId=run.id
+  db.prepare('UPDATE projects SET data=? WHERE id=?').run(JSON.stringify(storedProject),project.id)
+  db.prepare('INSERT INTO runs(id,project_id,status,data,cancel_requested,created_at) VALUES(?,?,?,?,?,?)')
+    .run(run.id,project.id,run.status,JSON.stringify(run),0,createdAt)
+  db.close()
+  return run
+}
 
 test('server auth, SQLite persistence, ownership isolation, and per-agent validation retry',async()=>{
   const register=async(email)=>{const response=await request('/auth/register',{method:'POST',body:{name:'Student User',email,password:'SecurePass123'}});assert.equal(response.status,201);return response.json()}
@@ -77,6 +137,69 @@ test('an active run can be cancelled and records cancelled status',async()=>{
   for(let i=0;i<80;i++) { current=await (await request(`/pipeline-runs/${run.id}`,{token:student.token})).json(); if(current.status==='cancelled')break; await new Promise(resolve=>setTimeout(resolve,25)) }
   assert.equal(current.status,'cancelled')
   assert.equal(current.steps[0].status,'cancelled')
+})
+
+test('mentor check-ins return and persist a context-aware mentor reply',async()=>{
+  const {student,project}=await createStudentProject('mentor-checkin@example.test','Mentor check-in project')
+  providerMode='mentor'
+  try {
+    const response=await request(`/projects/${project.id}/mentor/messages`,{method:'POST',token:student.token,body:{text:'Weekly check-in (week 1): I finished the attendance form and need help testing it.'}})
+    const responseText=await response.text()
+    assert.equal(response.status,201,responseText)
+    const messages=JSON.parse(responseText)
+    assert.equal(messages.studentMessage.role,'student')
+    assert.equal(messages.mentorReply.role,'mentor')
+    assert.match(messages.mentorReply.text,/one small test/i)
+    const history=await (await request(`/projects/${project.id}/mentor/messages`,{token:student.token})).json()
+    assert.equal(history.length,2)
+    assert.equal(history[0].text,messages.studentMessage.text)
+  } finally { providerMode='invalid' }
+})
+
+test('milestone progress triggers a planner adjustment and updates the latest blueprint',async()=>{
+  const {student,project}=await createStudentProject('planner-adjustment@example.test','Planner adjustment project')
+  seedCompletedRun(project)
+  providerMode='planner'
+  try {
+    const update=await request(`/projects/${project.id}/milestones/1`,{method:'PUT',token:student.token,body:{status:'in-progress'}})
+    assert.equal(update.status,200)
+    const body=await update.json()
+    assert.equal(body.progress.status,'in-progress')
+    assert.ok(body.adjustmentRun?.id)
+    let current
+    for(let i=0;i<100;i++) {
+      current=await (await request(`/pipeline-runs/${body.adjustmentRun.id}`,{token:student.token})).json()
+      if(['failed','completed','cancelled'].includes(current.status))break
+      await new Promise(resolve=>setTimeout(resolve,25))
+    }
+    assert.equal(current.status,'completed')
+    assert.equal(current.results.plan.summary,'Adjusted plan based on the latest progress.')
+    assert.equal(current.results.plan.milestones[0].status,'in-progress')
+    assert.equal(current.steps.find(step=>step.agentId==='planner').status,'completed')
+    const updatedProject=await (await request(`/projects/${project.id}`,{token:student.token})).json()
+    assert.equal(updatedProject.latestRunId,body.adjustmentRun.id)
+  } finally { providerMode='invalid' }
+})
+
+test('methodology and progress reports contain the project blueprint and saved progress',async()=>{
+  const {student,project}=await createStudentProject('reports-milestone3@example.test','Reports milestone project')
+  seedCompletedRun(project)
+  const methodology=await request(`/projects/${project.id}/reports`,{method:'POST',token:student.token,body:{kind:'methodology'}})
+  assert.equal(methodology.status,201)
+  const methodologyReport=await methodology.json()
+  assert.match(methodologyReport.content,/Methodological approach/)
+  assert.match(methodologyReport.content,/Development phases/)
+  assert.doesNotMatch(methodologyReport.content,/Mock report content/)
+
+  const db=new DatabaseSync(join(folder,'test.sqlite'))
+  db.prepare('INSERT INTO milestone_progress(project_id,week,status,updated_at) VALUES(?,?,?,?)')
+    .run(project.id,1,'done',new Date().toISOString())
+  db.close()
+  const progress=await request(`/projects/${project.id}/reports`,{method:'POST',token:student.token,body:{kind:'progress'}})
+  assert.equal(progress.status,201)
+  const progressReport=await progress.json()
+  assert.match(progressReport.content,/1 of 6 milestones marked complete/)
+  assert.match(progressReport.content,/Week 1 · Week 1 work:\*\* Completed/)
 })
 
 test('report generation rate limiting per user per project',async()=>{

@@ -7,7 +7,7 @@ The project has seven modules. Milestone 1 established:
 3. Building student onboarding: profile creation and skill assessment (Module 1)
 4. Building idea submission and the trigger for the agent pipeline (Module 2, submission part)
 
-The current app supports a deterministic local demo engine and a server-backed OpenAI mode. In live mode, the four specialist agents execute as separate calls with persisted per-step status. Mentor chat and report generation remain later modules.
+The current app supports a deterministic local demo engine and a server-backed OpenAI mode. In live mode, the four specialist agents execute as separate calls with persisted per-step status. Mentor check-ins, planner adjustments, and report generation are also implemented.
 
 ---
 
@@ -20,8 +20,8 @@ The current app supports a deterministic local demo engine and a server-backed O
 | 3 | Project Scope Definition and Technology Stack Recommendation | Agent | Built: runs after feasibility and consumes its result |
 | 4 | Milestone and Timeline Planning | Agent | Built: runs in parallel with risk after scope |
 | 5 | Risk Assessment | Agent | Built: runs in parallel with planning after scope |
-| 6 | Conversational Mentor Interaction | Interactive module (chat) | Not implemented |
-| 7 | Documentation and Report Generation | Interactive module (on demand) | Not implemented |
+| 6 | Conversational Mentor Interaction | Interactive module (chat) | Built: project-aware live replies, persisted conversation, and weekly check-ins |
+| 7 | Documentation and Report Generation | Interactive module (on demand) | Built: synopsis, methodology, progress, and final reports with export |
 
 ---
 
@@ -34,7 +34,7 @@ The current app supports a deterministic local demo engine and a server-backed O
 | **Orchestrator–workers** | A coordinator splits a task and hands sub-tasks to specialist agents, then combines their results. | The report contract and registry model four specialist responsibilities. Current execution uses one deterministic engine or one consolidated LLM request to produce all four sections; it does not yet make four separate model calls. |
 | **Prompt chaining / DAG** | Each agent's output becomes the next agent's input, and agents that don't depend on each other run in parallel. | The registry documents the intended dependency graph. The current report generator produces validated sections together rather than executing an independent agent DAG. |
 | **Specialisation** | Narrow agents with focused prompts are more reliable and easier to evaluate than one general prompt. | One agent per mentoring concern: feasibility, scope & stack, timeline, risk. |
-| **Conversational agents** | An agent that keeps a dialogue history and grounds its answers in shared context. | The Mentor (module 6) answers questions using the student profile and the pipeline results. |
+| **Conversational agents** | An agent that keeps a dialogue history and grounds its answers in shared context. | The Mentor (module 6) answers using project, student, blueprint, and recent conversation context; weekly check-ins capture accomplishments, blockers, and next focus. |
 | **Human-in-the-loop** | People review or override agent output at checkpoints. | Students edit their profile and re-submit; faculty review is a later milestone. |
 | **Asynchronous runs + polling** | Long LLM jobs run in the background; the client polls run status. | `POST …/pipeline-runs` returns a queued run at once; the UI polls `GET /pipeline-runs/:id`. |
 
@@ -62,8 +62,8 @@ These principles shape what the agents will produce:
 | 3 | Scope & Tech Stack | `scope_tech` | Idea, feasibility, skills | `ScopeAndStackResult`: problem, users, objectives, in/out of scope, success criteria, tech stack |
 | 4 | Milestone Planning | `planner` | Duration, scope & stack | `MilestonePlanResult`: milestones with weeks and deliverables |
 | 5 | Risk Assessment | `risk` | Idea, skills, scope & stack | `RiskResult`: risks with severity and mitigation |
-| 6 | Mentor chat | — (interactive) | Profile, pipeline results, conversation history | `MentorMessage` replies |
-| 7 | Report generation | — (on demand) | Profile, project, pipeline results | `ProjectReport` (synopsis, progress or final) |
+| 6 | Mentor chat | — (interactive) | Profile, pipeline results, conversation history | Context-grounded `MentorMessage` replies and weekly check-ins |
+| 7 | Report generation | — (on demand) | Project, pipeline results, milestone progress | `ProjectReport` (synopsis, methodology, progress or final) |
 
 The source of truth for agent roles and dependencies is `src/agents/registry.ts`.
 
@@ -75,7 +75,9 @@ Feasibility (2) ──► Scope & Tech Stack (3)┤
                                          └──► Risk Assessment (5)
    stage 1               stage 2                 stage 3 (parallel)
 
-After the run completes:  Mentor chat (6)  ·  Report generation (7)
+After the run completes:  Mentor check-ins (6)  ·  Reports (7)
+
+After a student changes milestone progress, a planner-only pipeline run uses the prior blueprint and the new status to adjust the remaining plan. Feasibility, scope, and risk results are retained.
 ```
 
 The server executes feasibility, then scope and technology, then planning and risk concurrently. Each result is independently validated. A failed agent retries once; if it still fails, dependents that have not started are marked failed. The student can cancel an active run. Retrying from the page creates a new run.
@@ -119,9 +121,9 @@ User 1 ── 1 StudentProfile 1 ──── * ProjectIdea 1 ──── * Pip
 | **ProjectIdea** | `id`, `studentId`, `title`, `description`, `domain: ai_ml\|web\|mobile\|iot\|data\|other`, `customDomain?` (student's own type when `other`), `durationWeeks`, `latestRunId?`, `createdAt` | M1 |
 | **PipelineRun** | `id`, `projectId`, `status: queued\|running\|completed\|failed`, `analysisMode?: demo\|live`, `steps: AgentStep[]`, `results?`, `createdAt`, `finishedAt?` | Current frontend demo pipeline |
 | **AgentStep** | `agentId: feasibility\|scope_tech\|planner\|risk`, `status`, `startedAt?`, `finishedAt?`, `summary?`, `error?` | M1 (created as `queued`) |
-| **PipelineResults** | `feasibility`, `scopeAndStack`, `plan`, `risk` (one result per agent, see §2.1) | Later |
-| **MentorMessage** | `id`, `projectId`, `role: student\|mentor`, `text`, `createdAt` | Later |
-| **ProjectReport** | `id`, `projectId`, `kind: synopsis\|progress\|final`, `content`, `createdAt` | Later |
+| **PipelineResults** | `feasibility`, `scopeAndStack`, `plan`, `risk` (one result per agent, see §2.1) | M2 |
+| **MentorMessage** | `id`, `projectId`, `role: student\|mentor`, `text`, `createdAt` | M3 |
+| **ProjectReport** | `id`, `projectId`, `kind: synopsis\|methodology\|progress\|final`, `content`, `createdAt` | M3 |
 
 ### Skill quiz
 
@@ -165,9 +167,11 @@ All bodies are JSON and use the models above. Errors return `{ "message": string
 | `GET` | `/projects/:id` | — | `ProjectIdea` (incl. `latestRunId`) | M1 |
 | `DELETE` | `/projects/:id` | — | `204`; also deletes the project's pipeline runs | M1 |
 | `POST` | `/projects/:id/pipeline-runs` | — | `PipelineRun`, status `queued`: **the pipeline trigger** | M1 |
-| `GET` | `/pipeline-runs/:id` | — | `PipelineRun` with step statuses (and `results` when completed) | M1 (status) · later (results) |
-| `GET` / `POST` | `/projects/:id/mentor/messages` | `{ text }` | `MentorMessage[]` / reply | Later |
-| `POST` | `/projects/:id/reports` | `{ kind }` | `ProjectReport` | Later |
+| `GET` | `/pipeline-runs/:id` | — | `PipelineRun` with step statuses and results when completed | M2 |
+| `GET` | `/projects/:id/milestones` | — | Saved milestone progress | M3 |
+| `PUT` | `/projects/:id/milestones/:week` | `{ status }` | `{ progress, adjustmentRun? }`; changed progress queues a planner adjustment when a blueprint exists | M3 |
+| `GET` / `POST` | `/projects/:id/mentor/messages` | `{ text }` | `MentorMessage[]` / `{ studentMessage, mentorReply }` | M3 |
+| `POST` | `/projects/:id/reports` | `{ kind: synopsis\|methodology\|progress\|final }` | Persisted `ProjectReport` with generated content | M3 |
 | `POST` | `/api/projects/analyze` | `{ project, profile }` | Validated `PipelineResults` | Local LLM proxy |
 | `GET` | `/health` | — | `{ status, providerConfigured, model }` | Local LLM proxy |
 
@@ -197,11 +201,13 @@ The local proxy is implemented in `server/index.mjs`. It validates the incoming 
 | Onboarding: details → skills → quiz → assessment; edit profile | `src/pages/Onboarding.tsx` |
 | Idea submission + pipeline trigger | `src/pages/CreateProject.tsx` |
 | Submitted idea + pipeline status | `src/pages/ProjectRun.tsx` |
+| Weekly mentor check-ins | `src/pages/Mentor.tsx` |
+| Project report generation and exports | `src/pages/Documentation.tsx` |
 | Dashboard, project list | `src/pages/Home.tsx`, `src/pages/Projects.tsx` |
 
 **Demo mode vs. live analysis.** Leave `VITE_API_BASE_URL` blank for deterministic local analysis in browser storage. Set it to `http://127.0.0.1:3000` and run `npm run dev:api` for SQLite-backed authentication/projects and the four-agent OpenAI pipeline. Remote provider failures do not silently fall back to demo output.
 
-Copy `.env.example` to `.env`, set `JWT_SECRET` and `LLM_API_KEY` there, then run `npm run dev:api` and `npm run dev` in separate terminals. Four separate OpenAI calls are made per run, with up to one retry each and a 1,600-token output cap per attempt. Calls can incur provider charges. Do not expose the local backend to a public network.
+Copy `.env.example` to `.env`, set `JWT_SECRET` and `LLM_API_KEY` there, then run `npm run dev:api` and `npm run dev` in separate terminals. Initial analysis uses four OpenAI calls; each mentor reply and plan adjustment uses one. Calls may retry once and can incur provider charges. Do not expose the local backend to a public network.
 
 **Accounts:** `src/services/auth.ts`, `src/auth/AuthContext.tsx` (`useAuth`, `RequireAuth`), `src/pages/Auth.tsx`, `src/components/UserMenu.tsx`. In demo mode, accounts live in this browser with salted SHA-256 hashes. That only makes the flow demonstrable; it is not real security.
 

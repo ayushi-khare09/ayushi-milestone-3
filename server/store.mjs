@@ -21,11 +21,31 @@ CREATE TABLE IF NOT EXISTS projects(id TEXT PRIMARY KEY, student_id TEXT NOT NUL
 CREATE TABLE IF NOT EXISTS runs(id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE, status TEXT NOT NULL, data TEXT NOT NULL, cancel_requested INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS milestone_progress(project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE, week INTEGER NOT NULL, status TEXT NOT NULL CHECK(status IN ('planned','in-progress','half-done','done')), updated_at TEXT NOT NULL, PRIMARY KEY(project_id,week));
 CREATE TABLE IF NOT EXISTS mentor_messages(id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE, role TEXT NOT NULL CHECK(role IN ('student','mentor')), text TEXT NOT NULL, created_at TEXT NOT NULL);
-CREATE TABLE IF NOT EXISTS reports(id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE, kind TEXT NOT NULL CHECK(kind IN ('synopsis','progress','final')), content TEXT NOT NULL, created_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS reports(id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE, kind TEXT NOT NULL CHECK(kind IN ('synopsis','methodology','progress','final')), content TEXT NOT NULL, created_at TEXT NOT NULL);
 CREATE INDEX IF NOT EXISTS ix_projects_student ON projects(student_id);
 CREATE INDEX IF NOT EXISTS ix_runs_project ON runs(project_id);
 CREATE INDEX IF NOT EXISTS ix_mentor_messages_project ON mentor_messages(project_id, created_at);
 CREATE INDEX IF NOT EXISTS ix_reports_project ON reports(project_id, created_at);`)
+
+const reportsSchema = db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='reports'").get()?.sql ?? ''
+if (!reportsSchema.includes("'methodology'")) {
+  db.exec(`PRAGMA foreign_keys=OFF;
+    BEGIN IMMEDIATE;
+    CREATE TABLE reports_v2(
+      id TEXT PRIMARY KEY,
+      project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+      kind TEXT NOT NULL CHECK(kind IN ('synopsis','methodology','progress','final')),
+      content TEXT NOT NULL,
+      created_at TEXT NOT NULL
+    );
+    INSERT INTO reports_v2(id,project_id,kind,content,created_at)
+      SELECT id,project_id,kind,content,created_at FROM reports;
+    DROP TABLE reports;
+    ALTER TABLE reports_v2 RENAME TO reports;
+    CREATE INDEX IF NOT EXISTS ix_reports_project ON reports(project_id, created_at);
+    COMMIT;
+    PRAGMA foreign_keys=ON;`)
+}
 
 const now = () => new Date().toISOString()
 const id = (prefix) => `${prefix}_${randomBytes(16).toString('hex')}`

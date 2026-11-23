@@ -2,13 +2,16 @@
 
 Frontend starter for the Infosys **AI Academic Project Mentor** team project.
 
-## Current scope (Milestone 2)
+## Current scope (Milestones 1–3)
 
 - **Home:** a short welcome card when signed out, and a dashboard (profile summary, recent projects) when signed in
 - **Accounts:** server-backed registration, sign-in, and sign-out. Password reset is disabled until verified recovery is available. Each account has its own profile and projects.
 - **Student onboarding (Module 1):** profile creation, skill self-ratings, a required skill quiz, and a readiness assessment with strengths and growth areas. Edit profile re-tests only changed skills.
 - **Project idea submission:** validated form (title, description, domain, duration) that triggers a functional multi-agent analysis pipeline.
 - **Milestone 2 analysis:** four specialist agents run as separate validated steps: feasibility → scope and technology → planning → risk. Each step is persisted and visible while it runs, supports one retry, and can be cancelled.
+- **Milestone 3 risk and progress:** project-specific risks include severity and mitigation. Students track milestone progress; live updates queue a planner-only adjustment, while demo mode adjusts the plan locally.
+- **Mentor check-ins:** project-scoped conversation history, structured weekly check-ins, and project-aware mentor guidance. Live replies use the configured backend model; demo mode uses local project-aware guidance.
+- **Documentation:** on-demand synopsis, methodology, progress, and final reports based on the saved blueprint and progress, with PDF, Word, and Markdown export.
 - **Backend storage and accounts:** Node API with SQLite persistence, server-side scrypt password hashes, signed expiring sessions, login throttling, and per-user profile/project/run access checks.
 - **Project analysis dashboard:** completed agent outputs are stored and displayed in the project detail view.
 - **Validation:** the engine includes a test suite covering the five required sample project scenarios.
@@ -57,7 +60,7 @@ npm run dev
 
 Check backend readiness at `http://127.0.0.1:3000/health`. It reports whether a key is configured; it does not verify the key or make a billable request.
 
-Each completed live report makes four OpenAI requests, one per agent. Each agent retries once after a failure, so a run can make up to eight requests. Responses are capped at 1,600 tokens per attempt. API usage may incur charges; monitor your OpenAI API billing and use synthetic student data for demos. The provider receives project details and relevant student context (skills, course/year, experience, available hours, assessment), but not account name or email.
+Each initial live analysis makes four OpenAI requests, one per agent. Each agent retries once after a failure, so a run can make up to eight requests. A mentor reply or milestone plan adjustment makes one request (with one retry). Responses are capped at 1,600 tokens per attempt. API usage may incur charges; monitor your OpenAI API billing and use synthetic student data for demos. The provider receives project details, relevant student context (skills, course/year, experience, available hours, assessment), and recent mentor conversation text, but not account name or email.
 
 ### Security and known limitations
 

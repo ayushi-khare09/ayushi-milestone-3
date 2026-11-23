@@ -4,6 +4,8 @@
  */
 
 export type ISODate = string
+export type MilestoneStatus = 'planned' | 'in-progress' | 'half-done' | 'done'
+export type MilestoneProgress = { week: number; status: MilestoneStatus; updatedAt?: ISODate }
 
 // ── Accounts ───────────────────────────────────────────────────────────────
 
@@ -213,7 +215,7 @@ export interface MentorMessage {
 export interface ProjectReport {
   id: string
   projectId: string
-  kind: 'synopsis' | 'progress' | 'final'
+  kind: 'synopsis' | 'methodology' | 'progress' | 'final'
   content: string
   createdAt: ISODate
 }

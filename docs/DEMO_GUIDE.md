@@ -15,13 +15,16 @@
 3. Submit an idea with a clear goal and duration.
 4. Show the pipeline page: feasibility runs first, scope follows it, then planning and risk run in parallel. Each row updates from queued to running and completed.
 5. Open the report and discuss feasibility evidence, scope boundaries, recommended stack, milestones, and mitigations.
-6. If time permits, start another analysis and cancel it while a step is running; show the cancelled state.
-7. Demonstrate record isolation by signing into a second account. The first account's projects should not appear.
+6. Open the mentor workspace, complete a weekly check-in, and ask a follow-up question about a reported blocker.
+7. Change a milestone status in the blueprint. Show the planner-only adjustment run and the revised plan.
+8. Generate and export a methodology or progress report.
+9. If time permits, start another analysis and cancel it while a step is running; show the cancelled state.
+10. Demonstrate record isolation by signing into a second account. The first account's projects should not appear.
 
 ## Safe test flow
 
 - Use fictional student/project data for the demo.
-- Submit only one or two live projects; each successful run makes four OpenAI calls and each agent can retry once. Output is capped at 1,600 tokens per attempt.
+- Submit only one or two live projects; each initial analysis makes four OpenAI calls, mentor replies and plan adjustments make one each, and a request may retry once. Output is capped at 1,600 tokens per attempt.
 - To demo failures without API calls, remove `LLM_API_KEY`, restart the backend, and show the clear configuration error. For network/API error paths, use the automated mocked tests rather than repeatedly submitting paid requests.
 - Check provider usage after live testing. API billing is separate from ChatGPT billing.
 
@@ -52,4 +55,5 @@ flowchart TD
 - The browser keeps a bearer session token in local storage. Use secure, httpOnly cookies, HTTPS, CSRF defenses, and a production identity/security review before public deployment.
 - Every agent has one retry; repeated rate limits or invalid output still fail the run.
 - OpenAI output is advisory. Students and faculty should review feasibility, technology choices, estimates, and risks.
-- This demo does not include faculty roles, mentor chat, report generation, database migrations, durable queues, or deployment monitoring.
+- Mentor replies and planner adjustments require a configured backend LLM key in live mode; local demo mode uses deterministic project-aware guidance and progress updates.
+- Faculty roles, durable queues, and deployment monitoring are not included.

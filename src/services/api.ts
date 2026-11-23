@@ -6,16 +6,19 @@
  */
 import { assessSkills } from '../lib/skills'
 import { load, newId, save } from '../lib/storage'
-import type { MentorMessage, NewProjectIdea, PipelineRun, ProjectIdea, ProjectReport, StudentProfile } from '../types/models'
-import { completeDemoRun, deleteDemoRuns, getDemoRun, triggerDemoRun } from './demoPipeline'
+import type { MentorMessage, MilestoneProgress, MilestoneStatus, NewProjectIdea, PipelineRun, ProjectIdea, ProjectReport, StudentProfile } from '../types/models'
+import { completeDemoRun, deleteDemoRuns, getDemoRun, storeDemoRun, triggerDemoRun } from './demoPipeline'
+import { buildLocalMentorReply } from '../lib/mentor'
+import { adjustPlanForProgress } from '../lib/progress'
+import { makeProjectReport, type ReportKind } from '../lib/reportGeneration'
 import { ApiError, http, isDemoMode } from './http'
 import { getSession } from './session'
 
 export { ApiError, isDemoMode }
 
 export type ProfileInput = Omit<StudentProfile, 'id' | 'userId' | 'assessment' | 'createdAt' | 'updatedAt'>
-export type MilestoneStatus = 'planned' | 'in-progress' | 'half-done' | 'done'
-export type MilestoneProgress = { week: number; status: MilestoneStatus; updatedAt?: string }
+export type { MilestoneProgress, MilestoneStatus } from '../types/models'
+export type MilestoneUpdateResult = { progress: MilestoneProgress; adjustmentRun?: PipelineRun; adjustmentUnavailable?: string }
 
 const userId = () => {
   const id = getSession()?.user.id
@@ -41,7 +44,10 @@ export const api = {
     if (isDemoMode) {
       const messages = load<MentorMessage[]>(`mentor:${projectId}`, [])
       const studentMessage: MentorMessage = { id: newId('msg'), projectId, role: 'student', text, createdAt: new Date().toISOString() }
-      const mentorReply: MentorMessage = { id: newId('msg'), projectId, role: 'mentor', text: `Thanks for your message. I'll respond shortly about: ${text.substring(0, 50)}...`, createdAt: new Date().toISOString() }
+      const project = readProjects(userId()).find(item => item.id === projectId)
+      if (!project) throw new ApiError('Project not found.', 404)
+      const run = project.latestRunId ? await api.getPipelineRun(project.latestRunId) : null
+      const mentorReply: MentorMessage = { id: newId('msg'), projectId, role: 'mentor', text: buildLocalMentorReply(text, project, run?.results), createdAt: new Date().toISOString() }
       save(`mentor:${projectId}`, [...messages, studentMessage, mentorReply])
       return { studentMessage, mentorReply }
     }
@@ -55,14 +61,19 @@ export const api = {
   },
 
   /** Generate a report for a project */
-  async generateReport(projectId: string, kind: 'synopsis' | 'progress' | 'final'): Promise<ProjectReport> {
+  async generateReport(projectId: string, kind: ReportKind): Promise<ProjectReport> {
     if (isDemoMode) {
       const reports = load<ProjectReport[]>(`reports:${projectId}`, [])
+      const project = readProjects(userId()).find(item => item.id === projectId)
+      if (!project) throw new ApiError('Project not found.', 404)
+      const run = project.latestRunId ? await api.getPipelineRun(project.latestRunId) : null
+      const progress = await api.getMilestoneProgress(projectId)
+      if (kind !== 'synopsis' && !run?.results) throw new ApiError('Complete the project analysis before generating this report.', 409)
       const report: ProjectReport = {
         id: newId('rep'),
         projectId,
         kind,
-        content: `# Report: ${kind} for project ${projectId}\n\nGenerated locally in demo mode.`,
+        content: makeProjectReport(kind, project, run?.results ?? null, progress),
         createdAt: new Date().toISOString()
       }
       save(`reports:${projectId}`, [...reports, report])
@@ -133,13 +144,35 @@ export const api = {
     return http<MilestoneProgress[]>(`/projects/${encodeURIComponent(projectId)}/milestones`)
   },
 
-  async setMilestoneProgress(projectId: string, week: number, status: MilestoneStatus): Promise<MilestoneProgress> {
+  async setMilestoneProgress(projectId: string, week: number, status: MilestoneStatus): Promise<MilestoneUpdateResult> {
     const uid = userId()
-    if (!isDemoMode) return http<MilestoneProgress>(`/projects/${encodeURIComponent(projectId)}/milestones/${week}`, { method: 'PUT', body: JSON.stringify({ status }) })
+    if (!isDemoMode) return http<MilestoneUpdateResult>(`/projects/${encodeURIComponent(projectId)}/milestones/${week}`, { method: 'PUT', body: JSON.stringify({ status }) })
     const current = load<MilestoneProgress[]>(milestoneKey(uid, projectId), [])
+    const previous = current.find(item => item.week === week)
+    if (previous?.status === status) return { progress: previous }
     const progress = { week, status, updatedAt: new Date().toISOString() }
-    save(milestoneKey(uid, projectId), [...current.filter(item => item.week !== week), progress].sort((a, b) => a.week - b.week))
-    return progress
+    const updatedProgress = [...current.filter(item => item.week !== week), progress].sort((a, b) => a.week - b.week)
+    save(milestoneKey(uid, projectId), updatedProgress)
+    const project = readProjects(uid).find(item => item.id === projectId)
+    if (!project?.latestRunId) return { progress, adjustmentUnavailable: 'Complete an initial project analysis before the planner can adjust your plan.' }
+    const run = getDemoRun(project.latestRunId)
+    if (!run?.results) return { progress, adjustmentUnavailable: 'Complete an initial project analysis before the planner can adjust your plan.' }
+    const adjustedRun: PipelineRun = {
+      ...run,
+      id: newId('run'),
+      status: 'completed',
+      createdAt: progress.updatedAt!,
+      finishedAt: progress.updatedAt,
+      steps: run.steps.map(step => ({
+        ...step,
+        status: 'completed',
+        summary: step.agentId === 'planner' ? 'Plan adjusted to reflect the latest milestone progress.' : step.summary,
+      })),
+      results: { ...run.results, plan: adjustPlanForProgress(run.results.plan, updatedProgress) },
+    }
+    storeDemoRun(adjustedRun)
+    cacheProject(uid, { ...project, latestRunId: adjustedRun.id })
+    return { progress, adjustmentRun: adjustedRun }
   },
 
   /** Submits an idea and starts a local LLM/demo analysis or a configured API pipeline. */

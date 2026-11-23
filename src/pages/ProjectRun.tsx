@@ -76,7 +76,7 @@ export default function ProjectRun() {
       {loading ? <p className="page-loading"><LoaderCircle className="spin" size={18} /> Loading pipeline status…</p>
         : run ? <>
             <PipelinePanel run={run} onRetry={trigger} retrying={triggering} onCancel={cancel} cancelling={cancelling} />
-            {run.results && <AnalysisReport run={run} projectId={project.id} />}
+            {run.results && <AnalysisReport run={run} projectId={project.id} onRunCreated={next => setProject(current => current ? { ...current, latestRunId: next.id } : current)} />}
           </>
           : (
             <div className="callout">
@@ -88,7 +88,7 @@ export default function ProjectRun() {
   )
 }
 
-function AnalysisReport({ run, projectId }: { run: PipelineRun; projectId: string }) {
+function AnalysisReport({ run, projectId, onRunCreated }: { run: PipelineRun; projectId: string; onRunCreated: (run: PipelineRun) => void }) {
   const { feasibility, scopeAndStack, plan, risk } = run.results!
   const tabs = [
     { id: 'report-feasibility', label: 'Overview' },
@@ -126,7 +126,7 @@ function AnalysisReport({ run, projectId }: { run: PipelineRun; projectId: strin
           </section>
           <section className="report-section" id="report-tech"><div className="report-section-heading"><div><span className="report-kicker">02 · ARCHITECTURE</span><h3>Recommended tech stack</h3></div></div><div className="tech-stack-list">{scopeAndStack.techStack.map(item => <article className="tech-stack-item" key={item.layer}><span className="tech-stack-icon"><Check size={16} /></span><div><strong>{item.choice}</strong><span>{item.layer} · {item.learningDifficulty} to learn</span><p>{item.reason}</p></div></article>)}</div></section>
           <section className="report-section" id="report-scope"><div className="report-section-heading"><div><span className="report-kicker">03 · DEFINITION</span><h3>Project scope</h3></div></div><div className="scope-columns"><div><h4><Check size={16} /> In scope for MVP</h4><ul>{(scopeAndStack.inScope.length ? scopeAndStack.inScope : scopeAndStack.mvp).map(item => <li key={item}>{item}</li>)}</ul></div><div><h4><Clock3 size={16} /> Future expansion</h4><ul className="future-list">{(scopeAndStack.outOfScope.length ? scopeAndStack.outOfScope : scopeAndStack.optionalAdvancedFeatures).map(item => <li key={item}>{item}</li>)}</ul></div></div><div className="report-callout"><Target size={18} /><span><strong>Success looks like:</strong> {scopeAndStack.successCriteria[0] ?? scopeAndStack.summary}</span></div></section>
-          <section className="report-section" id="report-timeline"><div className="report-section-heading"><div><span className="report-kicker">04 · ROADMAP</span><h3>{plan.projectDurationWeeks}-week execution timeline</h3><p>A practical sequence of milestones to build and validate your project.</p></div><span className="milestone-count">{plan.milestones.length} milestones</span></div><MilestoneTracker projectId={projectId} plan={plan} /></section>
+          <section className="report-section" id="report-timeline"><div className="report-section-heading"><div><span className="report-kicker">04 · ROADMAP</span><h3>{plan.projectDurationWeeks}-week execution timeline</h3><p>A practical sequence of milestones to build and validate your project.</p></div><span className="milestone-count">{plan.milestones.length} milestones</span></div><MilestoneTracker key={run.id} projectId={projectId} plan={plan} onRunCreated={onRunCreated} /></section>
           <section className="report-section" id="report-risks"><div className="report-section-heading"><div><span className="report-kicker">05 · PLAN AHEAD</span><h3>Risks to watch</h3></div></div><ul className="risk-list">{risk.risks.map(item => <li key={item.title}><ShieldCheck size={17} /><div><strong>{item.title}</strong><p>{item.mitigation}</p></div><span>{item.severity}</span></li>)}</ul></section>
         </div>
         <aside className="report-snapshot"><span className="report-kicker">PROJECT SNAPSHOT</span><h3>MVP at a glance</h3><div className="snapshot-stats"><div><strong>{plan.projectDurationWeeks}</strong><span>weeks</span><small>Estimated timeline</small></div><div><strong>{feasibility.implementationComplexity}</strong><small>Complexity</small></div><div><strong>{scopeAndStack.projectModules.length}</strong><small>Core modules</small></div><div><strong>{scopeAndStack.techStack.length}</strong><small>Tech choices</small></div></div><div className="snapshot-priority"><span>TOP PRIORITY</span><strong><ShieldCheck size={16} /> {feasibility.recommendations[0] ?? 'Build and validate a focused MVP'}</strong></div><p className="snapshot-note">Use this report as a starting point. Adjust the plan as you learn and test your idea.</p></aside>
@@ -136,10 +136,11 @@ function AnalysisReport({ run, projectId }: { run: PipelineRun; projectId: strin
   )
 }
 
-function MilestoneTracker({ projectId, plan }: { projectId: string; plan: MilestonePlanResult }) {
+function MilestoneTracker({ projectId, plan, onRunCreated }: { projectId: string; plan: MilestonePlanResult; onRunCreated: (run: PipelineRun) => void }) {
   const [statuses, setStatuses] = useState<Record<number, MilestoneStatus>>(() => Object.fromEntries(plan.milestones.map(item => [item.week, item.status])))
   const [savingWeek, setSavingWeek] = useState<number | null>(null)
   const [error, setError] = useState('')
+  const [adjustmentMessage, setAdjustmentMessage] = useState('')
   const [loaded, setLoaded] = useState(false)
 
   useEffect(() => {
@@ -159,7 +160,17 @@ function MilestoneTracker({ projectId, plan }: { projectId: string; plan: Milest
     setStatuses(current => ({ ...current, [week]: next }))
     setSavingWeek(week)
     setError('')
-    try { await api.setMilestoneProgress(projectId, week, next) }
+    try {
+      const result = await api.setMilestoneProgress(projectId, week, next)
+      if (result.adjustmentRun) {
+        setAdjustmentMessage('Progress saved. The planner is updating your remaining plan.')
+        onRunCreated(result.adjustmentRun)
+      } else if (result.adjustmentUnavailable) {
+        setAdjustmentMessage(result.adjustmentUnavailable)
+      } else {
+        setAdjustmentMessage('Progress saved.')
+      }
+    }
     catch (e) { setStatuses(current => ({ ...current, [week]: prior })); setError(errorMessage(e)) }
     finally { setSavingWeek(null) }
   }
@@ -170,6 +181,7 @@ function MilestoneTracker({ projectId, plan }: { projectId: string; plan: Milest
       <div className="milestone-progress-bar" role="progressbar" aria-label="Project milestone progress" aria-valuemin={0} aria-valuemax={plan.milestones.length} aria-valuenow={done}><span style={{ width: `${percent}%` }} /></div>
     </div>
     {error && <p className="milestone-error" role="alert">{error}</p>}
+    {adjustmentMessage && <p className="milestone-update-message" role="status">{adjustmentMessage}</p>}
     <ol className="report-milestones tracker-milestones">{plan.milestones.map(item => {
       const status = statuses[item.week] ?? item.status
       const complete = status === 'done'
